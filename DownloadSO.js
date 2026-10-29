@@ -1,4 +1,4 @@
-// DownloadSO.js (Fixed: SQLite Init + Safe Transactions)
+// DownloadSO.js 
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -11,73 +11,51 @@ import {
   Platform,
   StatusBar,
   Alert,
-  ActivityIndicator, DeviceEventEmitter,
+  ActivityIndicator,
+  DeviceEventEmitter,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { GestureHandlerRootView, Swipeable } from 'react-native-gesture-handler';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { executeQuery } from './db'; // remote server query
-import { initDB, getDB } from './dbLocal'; // local SQLite
+import { executeQuery, getServerConfig } from './db'; 
+import { initDB, getDB, deleteSO } from './dbLocal'; 
+import { getCurrentEnvironment, envLabel } from './Soenv';
+import { quoteIdent } from './serverConfig'; 
 
 export default function DownloadSO({ navigation }) {
   const [soNumber, setSoNumber] = useState('');
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [dbConfig, setDbConfig] = useState(null);
-  const [dbReady, setDbReady] = useState(false);
+  const [environment, setEnvironment] = useState(null);
 
-  useEffect(() => {
-    loadLocalSO(); // initial load
 
-    const listener = DeviceEventEmitter.addListener('SO_UPLOADED', (soNumber) => {
-      console.log('Reload DownloadSO for deleted SO:', soNumber);
-      loadLocalSO(); // reload list
-    });
-
-    return () => listener.remove(); // clean up
-  }, []);
-
-  // Load server config
-  useEffect(() => {
-    const loadConfig = async () => {
-      try {
-        const saved = await AsyncStorage.getItem('SERVER_CONFIG');
-        if (!saved) throw new Error('Server config not found');
-        setDbConfig(JSON.parse(saved));
-      } catch (err) {
-        console.log('Error loading server config:', err);
-        Alert.alert('Error', 'Server configuration not set. Go to Settings first.');
-      }
-    };
-    loadConfig();
-  }, []);
-
-  // Initialize DB and load local SO
-  useEffect(() => {
-    const initAndLoad = async () => {
-      try {
-        await initDB();           // create tables
-        setDbReady(true);         // DB ready flag
-        await loadLocalSO();      // load local records
-      } catch (err) {
-        console.log('DB init/load error:', err);
-      }
-    };
-    initAndLoad();
-  }, []);
-
-  // Load local SO records
   const loadLocalSO = async () => {
     try {
+      const env = await getCurrentEnvironment();
+      setEnvironment(env);
+
+      if (!env) {
+        setRecords([]);
+        return;
+      }
+
+      await initDB();
       const db = getDB();
-      const [headerRes] = await db.executeSql(`SELECT * FROM so_header ORDER BY so_number DESC`);
+
+      const [headerRes] = await db.executeSql(
+        `SELECT * FROM so_header WHERE environment = ? ORDER BY so_number DESC`,
+        [env]
+      );
       const headers = headerRes.rows.raw();
       const list = [];
 
       for (let so of headers) {
-        const [itemsRes] = await db.executeSql(`SELECT * FROM so_items WHERE so_number = ?`, [so.so_number]);
+        const [itemsRes] = await db.executeSql(
+          `SELECT * FROM so_items WHERE environment = ? AND so_number = ?`,
+          [env, so.so_number]
+        );
         list.push({
           id: so.so_number,
+          environment: env,
           so: so.so_number,
           customer: so.customer,
           pono: so.pono,
@@ -93,45 +71,62 @@ export default function DownloadSO({ navigation }) {
     }
   };
 
+  useEffect(() => {
+    loadLocalSO(); // initial load
+
+  
+    const unsubscribe = navigation.addListener('focus', loadLocalSO);
+
+    const listener = DeviceEventEmitter.addListener('SO_UPLOADED', () => {
+      loadLocalSO();
+    });
+
+    return () => {
+      unsubscribe();
+      listener.remove();
+    };
+  }, [navigation]);
+
   // Download SO from server
-  const fetchSO = async (soNum = '') => {
-    if (!dbConfig || !soNum || !dbReady) return;
+  const fetchSO = async (rawSo = '') => {
+    const soNum = String(rawSo).replace(/'/g, "''");
+    if (!soNum) return;
+
     setLoading(true);
 
     try {
-      const pick1Table = `[${dbConfig.mainDB}].[dbo].[PICK1]`;
-      const pick2Table = `[${dbConfig.mainDB}].[dbo].[PICK2]`;
-      const so1Table = `[${dbConfig.subDB}].[dbo].[SO1]`;
-      const so2Table = `[${dbConfig.subDB}].[dbo].[SO2]`;
+    
+      const cfg = await getServerConfig();
+      const env = cfg.environment;
 
-      // --- Check if SO already picked ---
-      const checkQuery = `SELECT COUNT(*) AS cnt FROM ${pick1Table} WHERE refsono = '${soNum}'`;
-      const check = await executeQuery(checkQuery);
+      await initDB();
+
+      const pick1Table = `${quoteIdent(cfg.mainDB)}.[dbo].[PICK1]`;
+      const pick2Table = `${quoteIdent(cfg.mainDB)}.[dbo].[PICK2]`;
+      const so1Table = `${quoteIdent(cfg.subDB)}.[dbo].[SO1]`;
+      const so2Table = `${quoteIdent(cfg.subDB)}.[dbo].[SO2]`;
+
+      // Check if SO already picked 
+      const check = await executeQuery(
+        `SELECT COUNT(*) AS cnt FROM ${pick1Table} WHERE refsono = '${soNum}'`
+      );
       if (check?.[0]?.cnt > 0) {
         const proceed = await new Promise(resolve => {
-          Alert.alert(
-            'SO Already Picked',
-            'This SO was already picked. Edit?',
-            [
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-              { text: 'Edit', onPress: () => resolve(true) },
-            ]
-          );
+          Alert.alert('SO Already Picked', 'This SO was already picked. Edit?', [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Edit', onPress: () => resolve(true) },
+          ]);
         });
-        if (!proceed) {
-          setLoading(false);
-          return;
-        }
+        if (!proceed) return;
       }
 
-      // --- Fetch remote headers/items/serials first ---
+   
       const headers = await executeQuery(
         `SELECT tseqno, customer, pono, remarks FROM ${so1Table} WHERE tseqno = '${soNum}'`
       );
 
       if (!headers || headers.length === 0) {
-        Alert.alert('SO Not Found', `SO ${soNum} does not exist.`);
-        setLoading(false);
+        Alert.alert('SO Not Found', `SO ${rawSo} does not exist in ${envLabel(env)}.`);
         return;
       }
 
@@ -147,53 +142,58 @@ export default function DownloadSO({ navigation }) {
         );
       }
 
-      // --- Insert into SQLite (sync inside transaction) ---
+      // Insert into SQLite 
       const db = getDB();
-      db.transaction(tx => {
+      await db.transaction(tx => {
         headers.forEach(so => {
-          // Header
           tx.executeSql(
-            `INSERT INTO so_header (so_number, customer, pono, remarks, status)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(so_number) DO UPDATE SET
+            `INSERT INTO so_header (environment, so_number, customer, pono, remarks, status)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(environment, so_number) DO UPDATE SET
                customer = excluded.customer,
                pono = excluded.pono,
                remarks = excluded.remarks`,
-            [so.tseqno, so.customer, so.pono, so.remarks, 'NEW']
+            [env, so.tseqno, so.customer, so.pono, so.remarks, 'NEW']
           );
 
-          // Delete old items & serials
-          tx.executeSql(`DELETE FROM so_items WHERE so_number = ?`, [so.tseqno]);
-          tx.executeSql(`DELETE FROM so_serials WHERE so_number = ?`, [so.tseqno]);
+          // Delete old items & serials 
+          tx.executeSql(
+            `DELETE FROM so_items WHERE environment = ? AND so_number = ?`,
+            [env, so.tseqno]
+          );
+          tx.executeSql(
+            `DELETE FROM so_serials WHERE environment = ? AND so_number = ?`,
+            [env, so.tseqno]
+          );
 
           // Insert items
-          const items = itemsMap[so.tseqno] || [];
-          items.forEach(item => {
+          (itemsMap[so.tseqno] || []).forEach(item => {
             tx.executeSql(
-              `INSERT INTO so_items (so_number, barcode, description, qty) VALUES (?, ?, ?, ?)`,
-              [so.tseqno, (item.barcode || '').trim(), item.desc, item.qty]
+              `INSERT INTO so_items (environment, so_number, barcode, description, qty)
+               VALUES (?, ?, ?, ?, ?)`,
+              [env, so.tseqno, (item.barcode || '').trim(), item.desc, item.qty]
             );
           });
 
           // Insert serials
-          const serials = serialsMap[so.tseqno] || [];
-          serials.forEach(s => {
+          (serialsMap[so.tseqno] || []).forEach(s => {
             if (s.serialno) {
               tx.executeSql(
-                `INSERT OR IGNORE INTO so_serials (so_number, barcode, serial) VALUES (?, ?, ?)`,
-                [so.tseqno, s.barcode.trim(), s.serialno.trim()]
+                `INSERT OR IGNORE INTO so_serials (environment, so_number, barcode, serial)
+                 VALUES (?, ?, ?, ?)`,
+                [env, so.tseqno, (s.barcode || '').trim(), String(s.serialno).trim()]
               );
             }
           });
         });
       });
 
-      Alert.alert('Success', `SO ${soNum} downloaded.`);
+      Alert.alert('Success', `SO ${rawSo} downloaded (${envLabel(env)}).`);
+      setSoNumber('');
       await loadLocalSO();
-
     } catch (err) {
       console.log('Download error:', err);
-      Alert.alert('Error', 'Failed to download SO.');
+      Alert.alert('Error', err?.message || 'Failed to download SO.');
     } finally {
       setLoading(false);
     }
@@ -201,8 +201,8 @@ export default function DownloadSO({ navigation }) {
 
   const handleDownload = () => fetchSO(soNumber.trim());
 
-  // Delete SO
-  const handleDelete = async item => {
+  // Delete SO 
+  const handleDelete = item => {
     Alert.alert('Delete SO', `Delete SO ${item.so}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -210,8 +210,7 @@ export default function DownloadSO({ navigation }) {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDB();
-            await db.executeSql(`DELETE FROM so_header WHERE so_number = ?`, [item.so]);
+            await deleteSO(item.environment, item.so);
             await loadLocalSO();
           } catch (err) {
             console.log('Delete error:', err);
@@ -219,13 +218,6 @@ export default function DownloadSO({ navigation }) {
         },
       },
     ]);
-  };
-
-  const handleSelect = item => {
-    navigation.navigate('PickSerial', {
-      screen: 'PickDetails',
-      params: { soNumber: item.so, customer: item.customer, soItems: item.items },
-    });
   };
 
   const renderRightActions = item => (
@@ -236,7 +228,7 @@ export default function DownloadSO({ navigation }) {
 
   const renderItem = ({ item }) => (
     <Swipeable renderRightActions={() => renderRightActions(item)}>
-      <TouchableOpacity style={styles.card} onPress={() => handleSelect(item)}>
+      <TouchableOpacity style={styles.card} activeOpacity={1}>
         <Text style={styles.soText}>SO NO: {item.so}</Text>
         <Text style={styles.remarksText}>Items: {item.items.length}</Text>
       </TouchableOpacity>
@@ -249,6 +241,8 @@ export default function DownloadSO({ navigation }) {
         <View style={styles.container}>
           <View style={styles.headerBox}>
             <Text style={styles.headerTitle}>Download SO for Picking</Text>
+            {!!environment && (
+              <Text style={styles.serverText}>Server: {envLabel(environment)}</Text>)}
           </View>
 
           <View style={styles.inputRow}>
@@ -259,7 +253,7 @@ export default function DownloadSO({ navigation }) {
               onChangeText={setSoNumber}
               keyboardType="numeric"
             />
-            <TouchableOpacity style={styles.iconBtn} onPress={handleDownload}>
+            <TouchableOpacity style={styles.iconBtn} onPress={handleDownload} disabled={loading}>
               <Icon name="download" size={26} color="#1C4D8D" />
             </TouchableOpacity>
           </View>
@@ -272,8 +266,7 @@ export default function DownloadSO({ navigation }) {
             keyExtractor={item => item.id}
             renderItem={renderItem}
             contentContainerStyle={{ paddingBottom: 30 }}
-            ListEmptyComponent={<Text style={styles.emptyText}>No records found</Text>}
-          />
+            ListEmptyComponent={<Text style={styles.emptyText}>No records found</Text>}/>
         </View>
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -285,6 +278,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
   headerBox: { backgroundColor: '#1C4D8D', paddingVertical: 16, borderRadius: 10, marginBottom: 16 },
   headerTitle: { color: '#fff', fontSize: 20, fontWeight: '700', textAlign: 'center' },
+  serverText: { color: '#EAF0FA', fontSize: 12, textAlign: 'center', marginTop: 4 },
   inputRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
   input: { flex: 1, backgroundColor: '#f2f2f2', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 14 },
   iconBtn: { marginLeft: 10, padding: 8, borderRadius: 8, backgroundColor: '#EAF0FA' },

@@ -33,7 +33,7 @@ export default function SerialsScreen({ navigation, route }) {
             newSerials.splice(index, 1);
             setSerials(newSerials);
 
-            // Update PickDetails immediately
+            // Update PickDetails 
             if (onDeleteSerial) onDeleteSerial(index);
           } 
         }
@@ -44,8 +44,7 @@ export default function SerialsScreen({ navigation, route }) {
   const renderRightActions = (index) => (
     <TouchableOpacity 
       style={styles.deleteBtn} 
-      onPress={() => handleDelete(index)}
-    >
+      onPress={() => handleDelete(index)}>
    
       <Text style={styles.deleteText}>Delete</Text>
     </TouchableOpacity>

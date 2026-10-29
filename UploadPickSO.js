@@ -1,4 +1,4 @@
-//UploadPickSO
+//UploadPickSO.js 
 import React, { useEffect, useRef, useState } from 'react';
 import { 
   View, 
@@ -12,22 +12,30 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getCurrentEnvironment, soKey, envLabel } from './Soenv';
 
 export default function UploadPickSO({ route, navigation }) {
   const { soNumber, customer = '-', soItems = [] } = route.params || {};
+  const [environment, setEnvironment] = useState(route?.params?.environment || null);
   const [records, setRecords] = useState([]);
   const flatListRef = useRef(null);
   const [successSerials, setSuccessSerials] = useState([]);
   const [failedSerials, setFailedSerials] = useState([]);
 
-  
+
+  useEffect(() => {
+    if (environment) return;
+    getCurrentEnvironment().then(setEnvironment);
+  }, [environment]);
 
   useEffect(() => {
     const loadRecords = async () => {
+      if (!environment || !soNumber) return;
+
       try {
-        const savedSerials = await AsyncStorage.getItem(`SO_SERIALS_${soNumber}`);
-        const successRaw = await AsyncStorage.getItem(`SUCCESS_SERIALS_${soNumber}`);
-        const failedRaw = await AsyncStorage.getItem(`FAILED_SERIALS_${soNumber}`);
+        const savedSerials = await AsyncStorage.getItem(soKey('SO_SERIALS', environment, soNumber));
+        const successRaw = await AsyncStorage.getItem(soKey('SUCCESS_SERIALS', environment, soNumber));
+        const failedRaw = await AsyncStorage.getItem(soKey('FAILED_SERIALS', environment, soNumber));
 
         setSuccessSerials(successRaw ? JSON.parse(successRaw) : []);
         setFailedSerials(failedRaw ? JSON.parse(failedRaw) : []);
@@ -37,7 +45,7 @@ export default function UploadPickSO({ route, navigation }) {
         }
         const saved = JSON.parse(savedSerials);
 
-        // If may soItems → merge
+    
         if (soItems.length > 0) {
           const merged = soItems.map((item, idx) => {
             const savedItem = saved.find((s) => s.barcode === item.barcode);
@@ -65,11 +73,11 @@ export default function UploadPickSO({ route, navigation }) {
       }
     };
 
-    if (soNumber) loadRecords();
-  }, [soNumber, soItems]);
+    loadRecords();
+  }, [soNumber, soItems, environment]);
 
   const renderItem = ({ item }) => {
-    let statusStyle = styles.failedCard; // default
+    let statusStyle = styles.failedCard; 
 
     if (!item.serials || item.serials.length === 0) {
       statusStyle = styles.failedCard; // no serials scanned
@@ -96,15 +104,15 @@ export default function UploadPickSO({ route, navigation }) {
         <View style={styles.serialList}>
           {item.serials?.length > 0 ? (
             item.serials.map((s, i) => {
-              let icon = '⚠️'; // default partial/mixed
-              let color = '#FFA500'; // orange
+              let icon = '⚠️'; 
+              let color = '#FFA500'; 
 
               if (successSerials.includes(s) && !failedSerials.includes(s)) {
                 icon = '✔️';
-                color = '#28A745'; // green
+                color = '#28A745'; 
               } else if (!successSerials.includes(s) && failedSerials.includes(s)) {
                 icon = '❌';
-                color = '#DC3545'; // red
+                color = '#DC3545'; 
               }
 
               return (
@@ -129,6 +137,9 @@ export default function UploadPickSO({ route, navigation }) {
 
       <View style={styles.headerBox}>
         <Text style={styles.headerTitle}>SO No: {soNumber}</Text>
+        {!!environment && (
+          <Text style={styles.serverText}>Server: {envLabel(environment)}</Text>
+        )}
       </View>
 
       <Text style={styles.sectionTitle}>SO Item List</Text>
@@ -142,8 +153,7 @@ export default function UploadPickSO({ route, navigation }) {
         contentContainerStyle={{ paddingBottom: 40 }}
         ListEmptyComponent={
           <Text style={styles.emptyText}>No saved items for this SO</Text>
-        }
-      />
+        } />
     </SafeAreaView>
   );
 }
@@ -173,6 +183,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
   },
+  serverText: { color: '#EAF0FA', fontSize: 12, textAlign: 'center', marginTop: 4 },
   sectionTitle: {
     marginBottom: 6,
     fontSize: 16,

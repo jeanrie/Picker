@@ -1,6 +1,7 @@
 //Tabs.js
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
 
@@ -14,26 +15,39 @@ import UploadPickStack from './UploadPickStack'
 
 const Tab = createBottomTabNavigator();
 
+
+const TAB_BAR_STYLE = { height: 48, paddingBottom: 5, paddingTop: 0 };
+
+
+const HIDE_TAB_BAR_ON = ['PickDetails'];
+
 export default function Tabs() {
   return (
     <SafeAreaView style={{ flex: 1 }} edges={['bottom']}>
       <Tab.Navigator
-        screenOptions={({ route }) => ({
-          headerShown: false,
-          tabBarStyle: { height: 48, paddingBottom: 5, paddingTop: 0 },
-          tabBarLabelStyle: { fontSize: 10 },
-          tabBarIcon: ({ focused, color, size }) => {
-            let iconName = 'apps';
-            if (route.name === 'Dashboard') iconName = focused ? 'home' : 'home-outline';
-            if (route.name === 'DownloadSO') iconName = focused ? 'download' : 'download-outline';
-            if (route.name === 'PickSerial') iconName = focused ? 'barcode' : 'barcode-outline';
-            if (route.name === 'UploadSO') iconName = focused ? 'cloud-upload' : 'cloud-upload-outline';
-            if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
-            return <Icon name={iconName} size={18} color={focused ? '#2563eb' : '#94a3b8'} />;
-          },
-          tabBarActiveTintColor: '#2563eb',
-          tabBarInactiveTintColor: '#94a3b8',
-        })}
+        screenOptions={({ route }) => {
+          const focusedRouteName = getFocusedRouteNameFromRoute(route) ?? route.name;
+
+          return {
+            headerShown: false,
+           
+            tabBarStyle: HIDE_TAB_BAR_ON.includes(focusedRouteName)
+              ? { display: 'none' }
+              : TAB_BAR_STYLE,
+            tabBarLabelStyle: { fontSize: 10 },
+            tabBarIcon: ({ focused, color, size }) => {
+              let iconName = 'apps';
+              if (route.name === 'Dashboard') iconName = focused ? 'home' : 'home-outline';
+              if (route.name === 'DownloadSO') iconName = focused ? 'download' : 'download-outline';
+              if (route.name === 'PickSerial') iconName = focused ? 'barcode' : 'barcode-outline';
+              if (route.name === 'UploadSO') iconName = focused ? 'cloud-upload' : 'cloud-upload-outline';
+              if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
+              return <Icon name={iconName} size={18} color={focused ? '#2563eb' : '#94a3b8'} />;
+            },
+            tabBarActiveTintColor: '#2563eb',
+            tabBarInactiveTintColor: '#94a3b8',
+          };
+        }}
       >
         <Tab.Screen name="Dashboard" component={Dashboard} />
         <Tab.Screen name="DownloadSO" component={DownloadSO} options={{ tabBarLabel: 'Download SO' }} />
@@ -44,4 +58,3 @@ export default function Tabs() {
     </SafeAreaView>
   );
 }
-

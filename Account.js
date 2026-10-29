@@ -39,9 +39,16 @@ export default function Account({ navigation }) {
   const handleLogout = async () => {
     try {
       await AsyncStorage.removeItem('LOGGED_IN_USER');
+
+
       navigation.replace('Login');
+
     } catch (error) {
-      Alert.alert('Error', 'Failed to logout. Please try again.');
+      Alert.alert(
+        'Error',
+        'Failed to logout. Please try again.'
+      );
+
       console.log(error);
     }
   };

@@ -1,4 +1,4 @@
-// PickSerial.js (SQLite version)
+// PickSerial.js 
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -9,32 +9,52 @@ import {
   StyleSheet,
   Platform,
   StatusBar,
-  Alert, DeviceEventEmitter,
+  Alert,
+  DeviceEventEmitter,
 } from 'react-native';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getDB } from './dbLocal';
+import { initDB, getDB, deleteSO } from './dbLocal';
+import { getCurrentEnvironment, soKey, envLabel } from './Soenv';
 
 export default function PickSerial({ navigation }) {
   const [records, setRecords] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-
+  const [environment, setEnvironment] = useState(null);
 
   const loadDownloadedSO = async () => {
     try {
+      const env = await getCurrentEnvironment();
+      setEnvironment(env);
+
+      if (!env) {
+        setRecords([]);
+        return;
+      }
+
+      await initDB();
       const db = getDB();
 
-      // Get headers
-      const [headerRes] = await db.executeSql(`SELECT * FROM so_header ORDER BY so_number DESC`);
+      // Headers for CURRENT environment only
+      const [headerRes] = await db.executeSql(
+        `SELECT * FROM so_header WHERE environment = ? ORDER BY so_number DESC`,
+        [env]
+      );
       const headers = headerRes.rows.raw();
 
       const list = [];
 
       for (let so of headers) {
-        const [itemsRes] = await db.executeSql(`SELECT * FROM so_items WHERE so_number = ?`, [so.so_number]);
+        const [itemsRes] = await db.executeSql(
+          `SELECT * FROM so_items WHERE environment = ? AND so_number = ?`,
+          [env, so.so_number]
+        );
         const items = itemsRes.rows.raw();
 
-        const [serialsRes] = await db.executeSql(`SELECT * FROM so_serials WHERE so_number = ?`, [so.so_number]);
+        const [serialsRes] = await db.executeSql(
+          `SELECT * FROM so_serials WHERE environment = ? AND so_number = ?`,
+          [env, so.so_number]
+        );
         const serials = serialsRes.rows.raw();
 
         const itemsWithSerials = items.map((item, idx) => {
@@ -46,10 +66,12 @@ export default function PickSerial({ navigation }) {
           };
         });
 
-        // Load status from AsyncStorage
+        // Status from AsyncStorage 
         let savedStatus = 'NEW';
         try {
-          const statusFromStorage = await AsyncStorage.getItem(`SO_STATUS_${so.so_number}`);
+          const statusFromStorage = await AsyncStorage.getItem(
+            soKey('SO_STATUS', env, so.so_number)
+          );
           if (statusFromStorage) savedStatus = statusFromStorage;
         } catch (err) {
           console.log('Error loading status from AsyncStorage:', err);
@@ -57,11 +79,12 @@ export default function PickSerial({ navigation }) {
 
         list.push({
           id: so.so_number,
+          environment: env,
           so: so.so_number,
           customer: so.customer,
           pono: so.pono,
           remarks: so.remarks,
-          status: savedStatus, // <- dito gagamitin natin yung AsyncStorage status
+          status: savedStatus,
           items: itemsWithSerials,
         });
       }
@@ -74,8 +97,8 @@ export default function PickSerial({ navigation }) {
   };
 
   useEffect(() => {
-    loadDownloadedSO(); 
-    const listener = DeviceEventEmitter.addListener('SO_UPLOADED', (soNumber) => {
+    loadDownloadedSO();
+    const listener = DeviceEventEmitter.addListener('SO_UPLOADED', () => {
       loadDownloadedSO();
     });
     return () => listener.remove();
@@ -90,13 +113,14 @@ export default function PickSerial({ navigation }) {
 
   const handlePress = (item) => {
     navigation.navigate('PickDetails', {
+      environment: item.environment,
       soNumber: item.so,
       customer: item.customer,
       soItems: item.items,
     });
   };
 
-  const handleDelete = async (itemId) => {
+  const handleDelete = (item) => {
     Alert.alert('Delete SO', 'Are you sure you want to delete this SO?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -104,12 +128,9 @@ export default function PickSerial({ navigation }) {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDB();
-            await db.executeSql(`DELETE FROM so_header WHERE so_number = ?`, [itemId]);
-            await db.executeSql(`DELETE FROM so_items WHERE so_number = ?`, [itemId]);
-            await db.executeSql(`DELETE FROM so_serials WHERE so_number = ?`, [itemId]);
-            setRecords(records.filter(r => r.so !== itemId));
-            if (selectedId === itemId) setSelectedId(null);
+            await deleteSO(item.environment, item.so);
+            setRecords(prev => prev.filter(r => r.so !== item.so));
+            if (selectedId === item.id) setSelectedId(null);
           } catch (err) {
             console.log('Failed to delete SO:', err);
           }
@@ -118,8 +139,8 @@ export default function PickSerial({ navigation }) {
     ]);
   };
 
-  const renderRightActions = (itemId) => (
-    <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(itemId)}>
+  const renderRightActions = (item) => (
+    <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item)}>
       <Text style={styles.deleteText}>Delete</Text>
     </TouchableOpacity>
   );
@@ -131,7 +152,7 @@ export default function PickSerial({ navigation }) {
   };
 
   const renderItem = ({ item }) => (
-    <Swipeable renderRightActions={() => renderRightActions(item.so)}>
+    <Swipeable renderRightActions={() => renderRightActions(item)}>
       <TouchableOpacity
         style={[
           styles.card,
@@ -155,10 +176,12 @@ export default function PickSerial({ navigation }) {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+      <SafeAreaView style={styles.safe}>
         <View style={styles.container}>
           <View style={styles.headerBox}>
             <Text style={styles.headerTitle}>Pick Serial Number</Text>
+            {!!environment && (
+              <Text style={styles.serverText}>Server: {envLabel(environment)}</Text> )}
           </View>
 
           <Text style={styles.sectionTitle}>SO Number List</Text>
@@ -169,8 +192,7 @@ export default function PickSerial({ navigation }) {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'android' ? 120 : 30 }}
             renderItem={renderItem}
-            ListEmptyComponent={<Text style={styles.emptyText}>No records found</Text>}
-          />
+            ListEmptyComponent={<Text style={styles.emptyText}>No records found</Text>}/>
         </View>
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -182,6 +204,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
   headerBox: { backgroundColor: '#1C4D8D', paddingVertical: 16, paddingHorizontal: 12, borderRadius: 10, marginBottom: 16 },
   headerTitle: { color: '#fff', fontSize: 20, fontWeight: '700', textAlign: 'center' },
+  serverText: { color: '#EAF0FA', fontSize: 12, textAlign: 'center', marginTop: 4 },
   sectionTitle: { marginBottom: 5, fontSize: 16, fontWeight: '700', color: '#1C4D8D', textAlign: 'center' },
   card: { padding: 14, borderRadius: 10, marginBottom: 10 },
   row: { flexDirection: 'row', marginTop: 6 },

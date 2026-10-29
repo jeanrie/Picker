@@ -1,4 +1,4 @@
-// UploadSO.js (Fixed: dynamic pickby based on logged-in user + partial upload)
+// UploadSO.js 
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -18,7 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { executeQuery, executeNonQuery } from './db';
 import { GestureHandlerRootView, Swipeable } from 'react-native-gesture-handler';
 import { getDB } from './dbLocal';
-
+import { getCurrentEnvironment, soKey, envListKey, envLabel } from './Soenv';
 
 export default function UploadSO({ navigation }) {
   const [records, setRecords] = useState([]);
@@ -26,14 +26,22 @@ export default function UploadSO({ navigation }) {
   const [uploading, setUploading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [modalContent, setModalContent] = useState('');
+  const [environment, setEnvironment] = useState(null);
 
-  // Load uploaded SOs
+  // Load uploaded SOs for the CURRENT environment only
   const loadSOs = async () => {
     try {
+      const env = await getCurrentEnvironment();
+      setEnvironment(env);
 
-      const savedSOs = await AsyncStorage.getItem('UPLOADED_SOS');
-      const successRaw = await AsyncStorage.getItem('SUCCESS_UPLOADED_SOS');
-      const partialRaw = await AsyncStorage.getItem('PARTIAL_UPLOADED_SOS');
+      if (!env) {
+        setRecords([]);
+        return;
+      }
+
+      const savedSOs = await AsyncStorage.getItem(envListKey('UPLOADED_SOS', env));
+      const successRaw = await AsyncStorage.getItem(envListKey('SUCCESS_UPLOADED_SOS', env));
+      const partialRaw = await AsyncStorage.getItem(envListKey('PARTIAL_UPLOADED_SOS', env));
 
       const soList = savedSOs ? JSON.parse(savedSOs) : [];
       const successList = successRaw ? JSON.parse(successRaw) : [];
@@ -46,6 +54,7 @@ export default function UploadSO({ navigation }) {
 
         return {
           id: `${idx}`,
+          environment: env,
           so,
           uploaded: isUploaded,
           partial: !isUploaded && isPartial
@@ -69,9 +78,9 @@ export default function UploadSO({ navigation }) {
     setSelectedId(item.id);
 
     if (item.uploaded) {
-      navigation.navigate('UploadPickSO', { soNumber: item.so, soItems: [] });
+      navigation.navigate('UploadPickSO', { environment: item.environment, soNumber: item.so, soItems: [] });
     } else {
-      navigation.navigate('UploadPickSO', { soNumber: item.so });
+      navigation.navigate('UploadPickSO', { environment: item.environment, soNumber: item.so });
     }
   };
 
@@ -85,7 +94,7 @@ export default function UploadSO({ navigation }) {
   };
 
 
-  const uploadPickSO = async (soNumber) => {
+  const uploadPickSO = async (environment, soNumber) => {
     try {
 
       const loggedRaw = await AsyncStorage.getItem('LOGGED_IN_USER');
@@ -95,7 +104,7 @@ export default function UploadSO({ navigation }) {
       const empId = Number(loggedUser.user || loggedUser.ID);
       if (!empId) throw new Error('Invalid user ID');
 
-      const savedSerialsRaw = await AsyncStorage.getItem(`SO_SERIALS_${soNumber}`);
+      const savedSerialsRaw = await AsyncStorage.getItem(soKey('SO_SERIALS', environment, soNumber));
       const savedSerials = savedSerialsRaw ? JSON.parse(savedSerialsRaw) : [];
 
       const failedSerials = [];
@@ -232,9 +241,10 @@ export default function UploadSO({ navigation }) {
 
 
   const handleUpload = async () => {
-    if (!records.length) return;
+    if (!records.length || !environment) return;
     setUploading(true);
 
+    const env = environment;
     const failedUploads = [];
     const successUploads = [];
     const recordsCopy = [...records];
@@ -243,7 +253,7 @@ export default function UploadSO({ navigation }) {
     for (const r of recordsCopy) {
       if (r.uploaded) continue;
 
-      const result = await uploadPickSO(r.so);
+      const result = await uploadPickSO(env, r.so);
 
       // SUCCESS SERIALS
       if (result.successSerials && result.successSerials.length > 0) {
@@ -255,38 +265,41 @@ export default function UploadSO({ navigation }) {
           result.successSerials.length > 0 &&
           (!result.failedSerials || result.failedSerials.length === 0);
 
-   
+
 
         // mark uploaded or partial
-   
+
         const someFailed = result.failedSerials && result.failedSerials.length > 0;
 
         if (allSuccess) {
 
-          const successRaw = await AsyncStorage.getItem('SUCCESS_UPLOADED_SOS');
+          const successKey = envListKey('SUCCESS_UPLOADED_SOS', env);
+          const successRaw = await AsyncStorage.getItem(successKey);
           const success = successRaw ? JSON.parse(successRaw) : [];
 
           if (!success.includes(r.so)) {
             success.push(r.so);
-            await AsyncStorage.setItem('SUCCESS_UPLOADED_SOS', JSON.stringify(success));
+            await AsyncStorage.setItem(successKey, JSON.stringify(success));
           }
 
           // remove from partial if previously partial
-          const partialRaw = await AsyncStorage.getItem('PARTIAL_UPLOADED_SOS');
+          const partialKey = envListKey('PARTIAL_UPLOADED_SOS', env);
+          const partialRaw = await AsyncStorage.getItem(partialKey);
           const partial = partialRaw ? JSON.parse(partialRaw) : [];
           const updatedPartial = partial.filter(p => p !== r.so);
-          await AsyncStorage.setItem('PARTIAL_UPLOADED_SOS', JSON.stringify(updatedPartial));
+          await AsyncStorage.setItem(partialKey, JSON.stringify(updatedPartial));
 
         }
 
         if (someFailed && !allSuccess) {
 
-          const partialRaw = await AsyncStorage.getItem('PARTIAL_UPLOADED_SOS');
+          const partialKey = envListKey('PARTIAL_UPLOADED_SOS', env);
+          const partialRaw = await AsyncStorage.getItem(partialKey);
           const partial = partialRaw ? JSON.parse(partialRaw) : [];
 
           if (!partial.includes(r.so)) {
             partial.push(r.so);
-            await AsyncStorage.setItem('PARTIAL_UPLOADED_SOS', JSON.stringify(partial));
+            await AsyncStorage.setItem(partialKey, JSON.stringify(partial));
           }
 
         }
@@ -302,14 +315,23 @@ export default function UploadSO({ navigation }) {
         // remove SO locally ONLY if all serials are successful
         if (!result.failedSerials || result.failedSerials.length === 0) {
 
-          await AsyncStorage.removeItem(`SO_SERIALS_${r.so}`);
+          await AsyncStorage.removeItem(soKey('SO_SERIALS', env, r.so));
 
           try {
             const db = getDB();
 
-            await db.executeSql(`DELETE FROM so_serials WHERE so_number = ?`, [r.so]);
-            await db.executeSql(`DELETE FROM so_items WHERE so_number = ?`, [r.so]);
-            await db.executeSql(`DELETE FROM so_header WHERE so_number = ?`, [r.so]);
+            await db.executeSql(
+              `DELETE FROM so_serials WHERE environment = ? AND so_number = ?`,
+              [env, r.so]
+            );
+            await db.executeSql(
+              `DELETE FROM so_items WHERE environment = ? AND so_number = ?`,
+              [env, r.so]
+            );
+            await db.executeSql(
+              `DELETE FROM so_header WHERE environment = ? AND so_number = ?`,
+              [env, r.so]
+            );
 
             DeviceEventEmitter.emit('SO_UPLOADED', r.so);
 
@@ -328,13 +350,13 @@ export default function UploadSO({ navigation }) {
 
     setUploading(false);
 
-    // Build modal message
+  
     let modalMsg = '';
 
     if (successUploads.length) {
 
       for (const s of successUploads) {
-        const key = `SUCCESS_SERIALS_${s.soNumber}`;
+        const key = soKey('SUCCESS_SERIALS', env, s.soNumber);
         const existing = await AsyncStorage.getItem(key);
         const prev = existing ? JSON.parse(existing) : [];
 
@@ -362,7 +384,7 @@ export default function UploadSO({ navigation }) {
     if (failedUploads.length) {
 
       for (const f of failedUploads) {
-        const key = `FAILED_SERIALS_${f.soNumber}`;
+        const key = soKey('FAILED_SERIALS', env, f.soNumber);
         const existing = await AsyncStorage.getItem(key);
         const prev = existing ? JSON.parse(existing) : [];
 
@@ -389,28 +411,31 @@ export default function UploadSO({ navigation }) {
     await loadSOs();
   };
 
-  // ----------------------- DELETE FUNCTION -----------------------
+  
   const handleDelete = async (item) => {
+    const env = item.environment;
     const newRecords = records.filter(r => r.so !== item.so);
     setRecords(newRecords);
 
     await AsyncStorage.setItem(
-      'UPLOADED_SOS',
-      JSON.stringify(newRecords.map(r => r.so))
+      envListKey('UPLOADED_SOS', env),
+      JSON.stringify(newRecords.filter(r => r.environment === env).map(r => r.so))
     );
 
-    // also remove from uploaded success list
-    const uploadedRaw = await AsyncStorage.getItem('SUCCESS_UPLOADED_SOS');
+  
+    const successKey = envListKey('SUCCESS_UPLOADED_SOS', env);
+    const uploadedRaw = await AsyncStorage.getItem(successKey);
     const uploaded = uploadedRaw ? JSON.parse(uploadedRaw) : [];
     const updated = uploaded.filter(so => so !== item.so);
 
-    await AsyncStorage.setItem('SUCCESS_UPLOADED_SOS', JSON.stringify(updated));
+    await AsyncStorage.setItem(successKey, JSON.stringify(updated));
 
-    const partialRaw = await AsyncStorage.getItem('PARTIAL_UPLOADED_SOS');
+    const partialKey = envListKey('PARTIAL_UPLOADED_SOS', env);
+    const partialRaw = await AsyncStorage.getItem(partialKey);
     const partial = partialRaw ? JSON.parse(partialRaw) : [];
     const updatedPartial = partial.filter(so => so !== item.so);
 
-    await AsyncStorage.setItem('PARTIAL_UPLOADED_SOS', JSON.stringify(updatedPartial));
+    await AsyncStorage.setItem(partialKey, JSON.stringify(updatedPartial));
   };
 
   const renderRightActions = (item) => (
@@ -430,8 +455,7 @@ export default function UploadSO({ navigation }) {
       <Swipeable renderRightActions={() => renderRightActions(item)}>
         <TouchableOpacity
           onPress={() => handlePressCard(item)}
-          style={[styles.card, isSelected && styles.selectedCard, cardStyle]}
-        >
+          style={[styles.card, isSelected && styles.selectedCard, cardStyle]} >
           <Text style={styles.soText}>SO No: {item.so}</Text>
         </TouchableOpacity>
       </Swipeable>
@@ -444,6 +468,9 @@ export default function UploadSO({ navigation }) {
         <View style={styles.container}>
           <View style={styles.headerBox}>
             <Text style={styles.headerTitle}>Upload Picked SO</Text>
+            {!!environment && (
+              <Text style={styles.serverText}>Server: {envLabel(environment)}</Text>
+            )}
           </View>
 
           <Text style={styles.sectionTitle}>SO Pick List</Text>
@@ -454,8 +481,7 @@ export default function UploadSO({ navigation }) {
             renderItem={renderItem}
             ListEmptyComponent={
               <Text style={styles.emptyText}>No uploaded SOs yet</Text>
-            }
-          />
+            }/>
         </View>
 
         <TouchableOpacity
@@ -498,6 +524,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
   headerBox: { backgroundColor: '#1C4D8D', paddingVertical: 16, paddingHorizontal: 12, borderRadius: 10, marginBottom: 16 },
   headerTitle: { color: '#fff', fontSize: 20, fontWeight: '700', textAlign: 'center' },
+  serverText: { color: '#EAF0FA', fontSize: 12, textAlign: 'center', marginTop: 4 },
   sectionTitle: { marginBottom: 5, fontSize: 16, fontWeight: '700', color: '#1C4D8D', textAlign: 'center' },
   card: { backgroundColor: '#F7F9FC', padding: 14, borderRadius: 10, marginBottom: 10 },
   selectedCard: { borderColor: '#FF9800', borderWidth: 2 },
